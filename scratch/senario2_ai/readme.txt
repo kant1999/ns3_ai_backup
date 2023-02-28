@@ -1,1 +1,1 @@
-this is senario2
+直接python3 AIRL.py运行。共享的参数在shared_variable里面
