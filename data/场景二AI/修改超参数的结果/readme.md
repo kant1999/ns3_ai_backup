@@ -13,7 +13,7 @@
 2_5 target replace 从100变为40
 
 
-2_6 eposide 4*100s变为8*50s
+2_6 eposide 4 x 100s变为8 x 50s
 
 
 2_7 神经网络大小从20：20变为64：64
