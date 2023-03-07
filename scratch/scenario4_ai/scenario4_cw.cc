@@ -157,6 +157,7 @@ extern double net_error_radio[64];
 extern double t_idle;
 extern bool sta_begin_action;
 extern int Ampdusize[65]; 
+extern double snr[64];
 
 ///////////////////////////////////
 ////时间变量、计算空闲时间占空比的部分///
