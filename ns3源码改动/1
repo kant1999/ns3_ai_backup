@@ -1,1 +1,50 @@
-改动写在这里面
+************he-frame-exchange-manager.cc(src/wifi/model/he)************
+在ReceiveBasicTrigger()和SendQosNullFramesInTnPpdu()中，屏蔽了最开始的判定条件：
+if (trigger.GetCsRequired () && hdr.GetAddr2 () != m_txopHolder && m_navEnd > Simulator::Now ())
+{
+	NS_LOG_DEBUG ("Carrier Sensing required and channel busy, do nothing");
+	return;
+}
+
+************wifi-mac-queue.cc(src/wifi/model)************
+修改了MaxSize和MaxDelay的默认值：
+MaxSize：500→ 16000
+MaxDelay: 500 ms→ 5000 ms
+
+************tcp-congestion-ops.cc(src/internet/model)************
+注释了TcpNewReno::SlowStart()中对拥塞窗口的修改：
+//tcb->m_cWnd += tcb→m_segmentSize;
+注释了TcpNewReno::CongestionAvoidance()中对拥塞窗口的修改：
+//tcb->m_cWnd += static_cast<uint32_t> (adder);
+
+************fq-codel-queue-disc.cc(src/traffic-control/model)************
+Flows: 1024→ 2048
+EnableSetAssociativeHash: false→ true
+
+************wifi-default-ack-manager.cc************
+替换Commit b1bf40f4(https://gitlab.com/nsnam/ns-3-dev/-/commit/b1bf40f4093529b0c3b1c509ed2936a88ac22bc8)中的wifi-default-ack-manager.cc文件，修复wifi: Fix guard interval for BlockAck frames sent in TB PPDUs
+
+
+************rr-multi-user-scheduler.cc(src/wifi/model/he)************
+把SelectTxFormat()中的
+if(mpdu && !GetWifiRemoteStationManager()->GetHeSupported(mpdu->GetHeader().GetAddr1())) 移动到return TrySendingDlMuPpdu()前
+
+************wifi-remote-station-manager.cc/.h(src/wifi/model)************
+新增了一个函数SetMaxAmpduSize()来修改针对每个接收方的最大帧长度
+void WifiRemoteStationManager::SetMaxAmpduSize(const Mac48Address address, uint32_t maxSize)
+{
+    auto state = LookupState(address);
+    state->m_MaxAmpduSize = maxSize;
+}
+新增了一个函数GetMaxAmpduSize()来获得对应接收方的最大帧长度
+uint32_t
+WifiRemoteStationManager::GetMaxAmpduSize(const Mac48Address address) const
+{
+return LookupState(address)->m_MaxAmpduSize;
+}
+在LookupState()里创建new state时新增了：
+state->m_MaxAmpduSize = 122880;
+
+************mpdu-aggregator.cc************
+在GetMaxAmpduSize()中新加了一条判定语句来修改最大帧长度：
+maxAmpduSize = std::min(maxAmpduSize, stationManager->GetMaxAmpduSize(recipient));
