@@ -77,6 +77,11 @@ double throughputBytes = 0;
 double maxThroughput = 0;
 static int CWnd = 0;
 
+int nPsdu = 0;
+int last_nPsdu = 0;
+int nAckTimeOut = 0;
+int last_nAckTimeOut = 0;
+
 Ptr<WifiRemoteStationManager> rlmanager;
 
 static NetDeviceContainer apDevice, acStaDevices, axStaDevices;
@@ -230,6 +235,11 @@ void traceTxop(std::string context,Time start_time, Time duration,uint8_t linkID
   //start_time.GetNanoSeconds
 }
 
+void traceAckTimeOut(std::string context,Mac48Address addr)
+{
+  nAckTimeOut++;
+}
+
 void traceBackOff(std::string context, uint32_t value, uint8_t linkid)    //trace退避值
 {
   //NS_LOG_UNCOND(Simulator::Now().GetSeconds()<<" "<<context<<" backOff: "<<value);
@@ -316,9 +326,15 @@ tracePhyTx(WifiConstPsduMap psdus, WifiTxVector txVector, double txPowerW)
 {
   for (const auto& psdu : psdus)
   {
-        for (auto& mpdu : *PeekPointer(psdu.second))
+      WifiMacHeader hdr;
+      hdr = psdu.second->GetHeader(0);
+			if (hdr.IsQosData() && hdr.HasData())
+      {
+      	nPsdu+=1;
+      }
+      for (auto& mpdu : *PeekPointer(psdu.second))
         {
-            WifiMacHeader hdr = mpdu->GetHeader();
+            hdr = mpdu->GetHeader();
             if (hdr.IsQosData() && hdr.HasData())
             {
                 stat.nTxData += 1;
@@ -367,7 +383,10 @@ void CalculateThroughput()
   total_duration=zero_time;
   total_Txop=zero_time;
 
-  std::cout << "CW: " << cw << std::endl;  
+  std::cout << "CW: " << cw << std::endl;
+	std::cout << now.GetSeconds() << "s:\t" << cur << " Mbit/s" << " nPsdu: "<< nPsdu - last_nPsdu << " nAckTimeOut: "<< nAckTimeOut-last_nAckTimeOut << " ratio: " <<1.0*(nAckTimeOut-last_nAckTimeOut)/(nPsdu - last_nPsdu)<< " IDLE: " << t_idle<< std::endl;
+  last_nAckTimeOut = nAckTimeOut;
+  last_nPsdu = nPsdu;
   
   cw = ( n % 6 == 0 )? (( cw+1 ) * 2 - 1):cw;
   cw = std::min(max_cw, std::max(cw, min_cw));
@@ -418,6 +437,7 @@ void setTrace()
   Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyTxPsduBegin" , MakeCallback(&tracePhyTx));
   Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyTxDrop", MakeCallback(&tracePhyTxDrop));
   Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/State/RxError", MakeCallback(&PacketRxFailed));
+	Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/RemoteStationManager/MacTxDataFailed", MakeCallback(&traceAckTimeOut));
 }
 
 void setEdcaTimer()
