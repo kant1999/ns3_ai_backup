@@ -1059,7 +1059,7 @@ WifiRemoteStationManager::ReportAmpduTxStatus(Mac48Address address,
     NS_ASSERT(!address.IsGroup());
     for (uint16_t i = 0; i < nFailedMpdus; i++)
     {
-        m_macTxDataFailed(address);
+        //m_macTxDataFailed(address);
     }
     DoReportAmpduTxStatus(Lookup(address),
                           nSuccessfulMpdus,
