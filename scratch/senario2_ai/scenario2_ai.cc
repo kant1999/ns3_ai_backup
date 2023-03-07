@@ -64,7 +64,6 @@ using namespace std;
 
 /// @brief ///AP下行发送包
 
-
 int nRxMpdu = 0;
 double totalRxMpduBytes = 0;
 double lastTotalRx = 0;
