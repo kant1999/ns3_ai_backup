@@ -1,0 +1,787 @@
+/* -*-  Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+/*
+ * Copyright (c) 2016 SEBASTIEN DERONNE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation;
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
+ * Author: Sebastien Deronne <sebastien.deronne@gmail.com>
+ */
+#include <ctime>
+#include <sstream>
+#include "ns3/command-line.h"
+#include "ns3/pointer.h"
+#include "ns3/config.h"
+#include "ns3/uinteger.h"
+#include "ns3/boolean.h"
+#include "ns3/double.h"
+#include "ns3/string.h"
+#include "ns3/enum.h"
+#include "ns3/log.h"
+#include "ns3/yans-wifi-helper.h"
+#include "ns3/spectrum-wifi-helper.h"
+#include "ns3/ssid.h"
+#include "ns3/mobility-helper.h"
+#include "ns3/internet-stack-helper.h"
+#include "ns3/ipv4-address-helper.h"
+#include "ns3/udp-client-server-helper.h"
+#include "ns3/packet-sink-helper.h"
+#include "ns3/on-off-helper.h"
+#include "ns3/ipv4-global-routing-helper.h"
+#include "ns3/packet-sink.h"
+#include "ns3/yans-wifi-channel.h"
+#include "ns3/multi-model-spectrum-channel.h"
+#include "ns3/wifi-acknowledgment.h"
+#include "ns3/rng-seed-manager.h"
+#include "ns3/wifi-net-device.h"
+#include "ns3/qos-txop.h"
+#include "ns3/wifi-mac.h"
+#include "ns3/stats-module.h"
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/stats-module.h"
+#include "ns3/yans-wifi-helper.h"
+#include "ns3/TimestampTag.h"
+#include "ns3/wifi-mac-queue.h"
+#include "ns3/idApp.h"
+#include "ns3/traffic-control-helper.h"
+#include "ns3/wifi-psdu.h"
+#include "ns3/ampdu-subframe-header.h"
+
+using namespace ns3;
+using namespace std;
+
+int timestep = 200;
+int nRxMpdu = 0;
+int lastNRxMpdu = 0;
+int nTxMpdu = 0;
+int lastNTxMpdu = 0;
+double totalRxMpduBytes = 0;
+double SingleStaRx[64];
+double lastTotalRx = 0;
+// double SingleStaLastRx[64];
+int n = 1;
+double throughputBytes = 0;
+double maxThroughput = 0;
+static int CWnd = 0;
+
+int nPsdu = 0;
+int last_nPsdu = 0;
+int nAckTimeOut = 0;
+int last_nAckTimeOut = 0;
+
+Ptr<WifiRemoteStationManager> rlmanager;
+
+static NetDeviceContainer apDevice, acStaDevices, axStaDevices;
+
+extern double snr[64];
+
+struct StaStat
+{
+    double totalLoss = 0;
+    double acLoss = 0;
+    double axLoss = 0;
+    double nTxData = 0;
+    double nRxData = 0;
+    double nApTxData[64];
+    double nStaTxData[64];
+    double nApRxData[64];
+    double nStaRxData[64];
+    double nAcTxData = 0;
+    double nAcRxData = 0;
+    double nAxTxData = 0;
+    double nAxRxData = 0;
+    double last_acTx = 0;
+    double last_acRx = 0;
+    double last_axTx = 0;
+    double last_axRx = 0;
+    double last_totalTx = 0;
+    double last_totalRx = 0;
+
+} stat;
+
+Time last_start_time{Seconds(10)};  //记录上一次TXOP的开始时间，初始化为10s，因为是从10s开始统计
+Time total_duration{Seconds(0)};   //记录一个调度周期内总的信道繁忙时间
+Time last_duration{Seconds(0)};    //记录上一次的duration
+Time zero_time{Seconds(0)}; 
+Time total_Txop{Seconds(0.1)};
+double t_idle;
+int cw = 15;
+int max_cw = 1023;
+int min_cw = 15;
+
+uint8_t buffer[6];
+int nSta;
+//./ns3 run 'scratch/scenario2_base.cc --useExtendedBlockAck=true --dlAckType=NO-OFDMA' 2>scenario2_base.log
+
+NS_LOG_COMPONENT_DEFINE("scenario2");
+//////////////////////////////////////////////////////
+/******************App trace*************************/
+//////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////
+/******************TCP trace*************************/
+//////////////////////////////////////////////////////
+void traceTcpCWND(std::string context, uint32_t oldValue, uint32_t newValue)    //TCP层的拥塞窗口大小
+{
+  if (oldValue != newValue)
+  {
+    NS_LOG_UNCOND(context << "\t" <<Simulator::Now().GetSeconds() << " s   "<<"CWnd changed from "<<oldValue<<" to "<<newValue);
+  }
+  CWnd = newValue;
+}
+
+void traceAdvWnd(uint32_t oldValue, uint32_t newValue)                          //这个和下面那个都差不多，是接收方的接收窗口大小
+{
+  // std::cout<<"AdvWnd changed from "<<oldValue<<" to "<<newValue<<std::endl;
+}
+
+void traceRWnd(uint32_t oldValue, uint32_t newValue)
+{
+  // std::cout<<Simulator::Now().GetSeconds()<<"s   "<<"RWnd changed from "<<oldValue<<" to "<<newValue<<std::endl;
+}
+
+void traceTcpBIF(std::string context,uint32_t oldValue, uint32_t newValue)
+{
+  if(oldValue != newValue)
+  {
+    //NS_LOG_UNCOND(Simulator::Now().GetSeconds()<<"s   "<<" BytesInFlight: "<<newValue<<" availableWindow: "<<(CWnd-newValue)/1440);
+  }
+}
+
+void traceSocket()                                                              //这个是我找问题的时候绑定的trace，所有socket的trace都必须在程序运行之后才能绑定，因为运行前没有创建这个对象，所以要用schedule
+{
+  Config::Connect("/NodeList/*/$ns3::TcpL4Protocol/SocketList/*/CongestionWindow", MakeCallback(&traceTcpCWND));
+}
+
+//////////////////////////////////////////////////////
+/******************MAC trace*************************/
+//////////////////////////////////////////////////////
+void traceMacRxMpdu(std::string context, Ptr<const WifiMpdu> q)
+{
+  // NS_LOG_UNCOND("At time " << Simulator::Now().GetSeconds() << " a " << q->GetSize() << " bytes mpdu was acked at Ap , packetSize = " << q->GetPacketSize());
+  Ptr<const Packet> packet = q->GetPacket();
+  const WifiMacHeader *macHdr = &q->GetHeader();
+  if (macHdr->IsQosData() || macHdr->HasData())
+  {
+    stat.nRxData += 1;
+    totalRxMpduBytes += q->GetPacketSize();
+
+    macHdr->GetAddr1().CopyTo(buffer);
+    nSta = int(buffer[5]);                              //这个是获取mac地址的最后一位，用来区分是哪一个STA
+    if (nSta == 1) // reciever is AP ，这个时候不能用接收地址，要用发送地址
+    {
+      macHdr->GetAddr2().CopyTo(buffer);
+      nSta = int(buffer[5]);
+      SingleStaRx[nSta - 2] += q->GetPacketSize();      //记录单个STA的吞吐
+      stat.nStaRxData[nSta - 2] += 1;
+      if (nSta < 34)
+      {
+          stat.nAcRxData += 1;
+      }
+      else
+      {
+          stat.nAxRxData += 1;
+      }
+    }
+    else
+    {
+      SingleStaRx[nSta - 2] += q->GetPacketSize();
+      stat.nApRxData[nSta - 2] += 1;
+      if (nSta < 34)
+      {
+          stat.nAcRxData += 1;
+      }
+      else
+      {
+          stat.nAxRxData += 1;
+      }
+    }
+  }
+}
+
+void traceTxop(std::string context,Time start_time, Time duration,uint8_t linkID)    //统计占空比
+{     
+    //NS_LOG_UNCOND(context.substr(10,2)<<" start time: " << start_time.GetSeconds() <<" duration: "<<duration.GetMicroSeconds()<<" us");
+    if(start_time.GetNanoSeconds()!=last_start_time.GetNanoSeconds())
+    {   total_Txop = total_Txop+(start_time-last_start_time);
+        total_duration = total_duration + last_duration;
+     //   NS_LOG_UNCOND("total_duration: " << total_duration.GetNanoSeconds() <<" "<<"last_duration: "<<last_duration.GetNanoSeconds());
+        last_duration=duration;
+ 
+    }
+    else if(start_time == last_start_time)
+    {
+        if(duration.GetNanoSeconds()>=last_duration.GetNanoSeconds())
+        {
+            last_duration=duration;
+         //   NS_LOG_UNCOND("total_duration: " << total_duration.GetNanoSeconds() <<" "<<"last_duration: "<<last_duration.GetNanoSeconds());
+        }
+    }
+    last_start_time=start_time;
+  //NS_LOG_UNCOND("at time: " << Simulator::Now().GetSeconds());
+  //start_time.GetNanoSeconds
+}
+
+void traceAckTimeOut(std::string context,Mac48Address addr)
+{
+  nAckTimeOut++;
+}
+
+void traceBackOff(std::string context, uint32_t value, uint8_t linkid)    //trace退避值
+{
+  //NS_LOG_UNCOND(Simulator::Now().GetSeconds()<<" "<<context<<" backOff: "<<value);
+}
+
+void traceCW(std::string context, uint32_t value, uint8_t linkid)    //trace退避值
+{
+  //NS_LOG_UNCOND(Simulator::Now().GetSeconds()<<" "<<context<<" CW: "<<value);
+}
+
+void traceMacQueueDrop(Ptr<const WifiMpdu> item)        //mac队列丢包，任何原因
+{
+  NS_LOG_UNCOND("at time: " << Simulator::Now().GetSeconds() << " Mac Dropped a pakcet, size = " << item->GetPacketSize() << " SeqN: " << item->GetHeader().GetSequenceNumber() << " from: " << item->GetHeader().GetAddr2() << " to: " << item->GetHeader().GetAddr1() << " type: " << item->GetHeader().GetTypeString());
+}
+
+void traceMacQueueExpired(Ptr<const WifiMpdu> item)     //mac队列丢包，因为超时
+{
+  NS_LOG_UNCOND("at time: " << Simulator::Now().GetSeconds() << " Mac a pakcet expired, size = " << item->GetPacketSize() << " SeqN: " << item->GetHeader().GetSequenceNumber() << " from: " << item->GetHeader().GetAddr2() << " to: " << item->GetHeader().GetAddr1() << " type: " << item->GetHeader().GetTypeString());
+}
+
+void traceApMacQueueN(uint32_t oldValue, uint32_t newValue)     //mac队列当前长度
+{
+  //NS_LOG_UNCOND(Simulator::Now().GetSeconds()<<" AP Mac queue numbers changed from " << oldValue << " to " << newValue);
+}
+
+void traceRtsFailed(std::string context,Mac48Address macaddr)
+{
+  NS_LOG_UNCOND(context<<" Tx RTS failed: "<<macaddr);
+}
+void traceDataFailed(std::string context,Mac48Address macaddr)
+{
+  NS_LOG_UNCOND(context<<" Tx Data failed: "<<macaddr);
+}
+void traceRtsFinalFailed(std::string context,Mac48Address macaddr)
+{
+  NS_LOG_UNCOND(context<<" Tx RTS finally failed: "<<macaddr);
+}
+void traceDataFinalFailed(std::string context,Mac48Address macaddr)
+{
+  NS_LOG_UNCOND(context<<" Tx Data finally failed: "<<macaddr);
+}
+
+void setMinCwandMaxCw()
+{
+  Config::Set("/NodeList/[0-65]/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MinCw", UintegerValue(15));
+  Config::Set("/NodeList/[0-65]/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MaxCw", UintegerValue(15));
+}
+//////////////////////////////////////////////////////
+/******************PHY trace*************************/
+//////////////////////////////////////////////////////
+void tracePhyDrop(std::string context, Ptr<const Packet> packet, WifiPhyRxfailureReason reason) //物理层丢包
+{
+  Ptr<Packet> copy = packet->Copy();
+  WifiMacHeader macheader;
+  copy->PeekHeader(macheader);
+  //NS_LOG_UNCOND("Time: " << Simulator::Now().GetSeconds() << context << " a packet has been dropped , size: " << copy->GetSize() << " TxAddr: " << macheader.GetAddr2() << " RxAddr: " << macheader.GetAddr1() << " type: " << macheader.GetTypeString() << " reason: " << reason);
+}
+
+void traceRate(uint64_t oldValue, uint64_t newValue)
+{
+  //NS_LOG_UNCOND("Rate: "<<newValue);
+}
+
+void
+PacketRxFailed(std::string context,Ptr< const Packet > packet, double snr)
+{
+  Ptr<Packet> copy = packet->Copy();
+  WifiMacHeader hdr;
+  copy->PeekHeader(hdr);
+  //NS_LOG_UNCOND("at time: "<<Simulator::Now().GetSeconds()<<" node: "<<context.substr(10,2)<<" a psud rx failed! size: "<<copy->GetSize());
+}
+
+void
+tracePhyTxDrop(std::string context, Ptr<const Packet> packet)
+{
+  Ptr<Packet> copy = packet->Copy();
+  WifiMacHeader hdr;
+  copy->PeekHeader(hdr);
+  //NS_LOG_UNCOND("Time: " << Simulator::Now().GetSeconds() << context << "a packet dropped during Tx, size: "<< copy->GetSize() << " TxAddr: " << hdr.GetAddr2() << " RxAddr: " << hdr.GetAddr1() << " type: " << hdr.GetTypeString());
+}
+
+void
+tracePhyTx(WifiConstPsduMap psdus, WifiTxVector txVector, double txPowerW)
+{
+  for (const auto& psdu : psdus)
+  {
+      WifiMacHeader hdr;
+      hdr = psdu.second->GetHeader(0);
+			if (hdr.IsQosData() && hdr.HasData())
+      {
+      	nPsdu+=1;
+      }
+      for (auto& mpdu : *PeekPointer(psdu.second))
+        {
+            hdr = mpdu->GetHeader();
+            if (hdr.IsQosData() && hdr.HasData())
+            {
+                stat.nTxData += 1;
+                hdr.GetAddr1().CopyTo(buffer);
+                nSta = int(buffer[5]); // 这个是获取mac地址的最后一位，用来区分是哪一个STA
+                if (nSta == 1) // reciever is AP ，这个时候不能用接收地址，要用发送地址
+                {
+                    hdr.GetAddr2().CopyTo(buffer);
+                    nSta = int(buffer[5]);
+                    stat.nStaTxData[nSta - 2] += 1; // 记录单个STA的吞吐
+                    if(nSta<34)
+                    {
+                      stat.nAcTxData+=1;
+                    }else
+                    {
+                      stat.nAxTxData+=1;
+                    }
+                }
+                else
+                {
+                    stat.nApTxData[nSta - 2] += 1;
+                    if(nSta<34)
+                    {
+                      stat.nAcTxData+=1;
+                    }else
+                    {
+                      stat.nAxTxData+=1;
+                    }
+                }
+                // NS_LOG_UNCOND(hdr.GetAddr1() << " " << hdr.GetType());
+            }
+        }
+  }
+}
+//////////////////////////////////////////////////////
+/****************Calculate throughput****************/
+//////////////////////////////////////////////////////
+void CalculateThroughput()
+{
+  Time now = Simulator::Now();                                     /* Return the simulator's virtual time. */
+  double cur = ((totalRxMpduBytes - lastTotalRx) * (double)8) / (timestep*1e3); /* Convert Application RX Packets to MBits. */
+  ////////////////////////////
+  /////信道空闲时间占空比计算/////
+  ////////////////////////////
+  t_idle=1-(double)total_duration.GetNanoSeconds()/(double)total_Txop.GetNanoSeconds();
+  total_duration=zero_time;
+  total_Txop=zero_time;
+
+  std::cout << "CW: " << cw << std::endl;
+	std::cout << now.GetSeconds() << "s:\t" << cur << " Mbit/s" << " nPsdu: "<< nPsdu - last_nPsdu << " nAckTimeOut: "<< nAckTimeOut-last_nAckTimeOut << " ratio: " <<1.0*(nAckTimeOut-last_nAckTimeOut)/(nPsdu - last_nPsdu)<< " IDLE: " << t_idle<< std::endl;
+  last_nAckTimeOut = nAckTimeOut;
+  last_nPsdu = nPsdu;
+  
+  cw = ( n % 6 == 0 )? (( cw+1 ) * 2 - 1):cw;
+  cw = std::min(max_cw, std::max(cw, min_cw));
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MinCw", UintegerValue(cw));
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MaxCw", UintegerValue(cw));
+  
+  lastTotalRx = totalRxMpduBytes;
+  if(stat.nTxData-stat.last_totalTx != 0)
+  {
+    stat.totalLoss = 1.0-((stat.nRxData-stat.last_totalRx) /  (stat.nTxData-stat.last_totalTx));
+  }
+  if(stat.nAcTxData-stat.last_acTx != 0)
+  {
+    stat.acLoss = 1.0-((stat.nAcRxData-stat.last_acRx) / (stat.nAcTxData-stat.last_acTx));
+  }
+  if(stat.nAxTxData-stat.last_axTx != 0)
+  {
+    stat.axLoss = 1.0-((stat.nAxRxData-stat.last_axRx) / (stat.nAxTxData-stat.last_axTx));
+  }
+  
+  //NS_LOG_UNCOND(stat.nRxData<<" "<<stat.nTxData<<" "<<stat.nAcRxData<<" "<<stat.nAcTxData<<" "<<stat.nAxRxData<<" "<<stat.nAxTxData);
+  //NS_LOG_UNCOND(stat.last_totalRx<<" "<<stat.last_totalTx<<" "<<stat.last_acRx<<" "<<stat.last_acTx<<" "<<stat.last_axRx<<" "<<stat.last_axTx);
+  //NS_LOG_UNCOND(stat.nRxData-stat.last_totalRx<<" "<<stat.nTxData-stat.last_totalTx<<" "<<stat.nAcRxData-stat.last_acRx<<" "<<stat.nAcTxData-stat.last_acTx<<" "<<stat.nAxRxData-stat.last_axRx<<" "<<stat.nAxTxData-stat.last_axTx);
+  //NS_LOG_UNCOND("total loss: "<<stat.totalLoss<<" acloss: "<<stat.acLoss<<" acloss: "<<stat.axLoss);
+  
+  stat.last_acTx = stat.nAcTxData;
+  stat.last_acRx = stat.nAcRxData;
+  stat.last_axTx = stat.nAxTxData;
+  stat.last_axRx = stat.nAxRxData;
+  stat.last_totalTx = stat.nTxData;
+  stat.last_totalRx = stat.nRxData;
+
+  n++;
+
+  Simulator::Schedule(MilliSeconds(timestep), &CalculateThroughput);
+}
+
+void setTrace()
+{
+  Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/AckedMpdu", MakeCallback(&traceMacRxMpdu));
+  //Config::Connect("/NodeList/0/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/BackoffTrace", MakeCallback(&traceBackOff));
+  Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/CwTrace", MakeCallback(&traceCW));
+  Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/TxopTrace", MakeCallback(&traceTxop));
+  //Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/RemoteStationManager/MacTxRtsFailed", MakeCallback(&traceRtsFailed));
+  //Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/RemoteStationManager/MacTxDataFailed", MakeCallback(&traceDataFailed));
+  //Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/RemoteStationManager/MacTxFinalRtsFailed", MakeCallback(&traceRtsFinalFailed));
+  //Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/RemoteStationManager/MacTxFinalDataFailed", MakeCallback(&traceDataFinalFailed));
+  Config::ConnectWithoutContext("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyTxPsduBegin" , MakeCallback(&tracePhyTx));
+  Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyTxDrop", MakeCallback(&tracePhyTxDrop));
+  Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/State/RxError", MakeCallback(&PacketRxFailed));
+	Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/RemoteStationManager/MacTxDataFailed", MakeCallback(&traceAckTimeOut));
+}
+
+void setEdcaTimer()
+{
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HeConfiguration/BeMuEdcaTimer", TimeValue(MicroSeconds(2088960)));
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HeConfiguration/BkMuEdcaTimer", TimeValue(MicroSeconds(2088960)));
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HeConfiguration/ViMuEdcaTimer", TimeValue(MicroSeconds(2088960)));
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HeConfiguration/VoMuEdcaTimer", TimeValue(MicroSeconds(2088960)));
+}
+
+int main(int argc, char *argv[])
+{
+  //LogComponentEnable("PhyEntity", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("HePhy", LogLevel(LOG_LEVEL_DEBUG | LOG_PREFIX_TIME));
+  //LogComponentEnable("HeFrameExchangeManager", LogLevel(LOG_LEVEL_DEBUG | LOG_PREFIX_TIME));
+  //LogComponentEnable("WifiPhy", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("InterferenceHelper", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("MultiModelSpectrumChannel", LogLevel(LOG_LEVEL_LOGIC | LOG_PREFIX_TIME));
+  //LogComponentEnable("SpectrumWifiPhy", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("ThresholdPreambleDetectionModel", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+
+  //LogComponentEnable("HeFrameExchangeManager", LogLevel(LOG_LEVEL_FUNCTION | LOG_PREFIX_TIME));
+  //LogComponentEnable("RrMultiUserScheduler", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("MultiUserScheduler", LogLevel(LOG_LEVEL_FUNCTION | LOG_PREFIX_TIME));
+  //LogComponentEnable("FrameExchangeManager", LogLevel(LOG_LEVEL_FUNCTION | LOG_PREFIX_TIME));
+  //LogComponentEnable("QosFrameExchangeManager", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("QosTxop", LogLevel(LOG_LEVEL_FUNCTION | LOG_PREFIX_TIME));
+
+  //LogComponentEnable("Txop", LogLevel(LOG_LEVEL_FUNCTION | LOG_PREFIX_TIME));
+  //LogComponentEnable("QosTxop", LogLevel(LOG_LEVEL_FUNCTION | LOG_PREFIX_TIME));
+  //LogComponentEnable("ChannelAccessManager", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+  //LogComponentEnable("FqCoDelQueueDisc",LogLevel(LOG_LEVEL_INFO|LOG_PREFIX_TIME));
+
+  //LogComponentEnable("IdealWifiManager", LogLevel(LOG_LEVEL_INFO | LOG_PREFIX_TIME));
+
+  double simulationTime{6};
+  uint32_t payloadSize = 1440;
+  bool tracing{true};
+  // 802.11 ac
+  bool acSgi{true};
+  std::size_t acnStations{32};
+  // 802.11 ax
+  std::size_t axnStations{32};
+  int axGi{800};
+  bool useExtendedBlockAck{false};
+  std::string dlAckSeqType{"NO-OFDMA"};
+
+  CommandLine cmd(__FILE__);
+  cmd.AddValue("tracing", "true if need pcap files", tracing);
+  cmd.AddValue("acGuardInterval", "acGuardInterval", acSgi);
+  cmd.AddValue("axGuardInterval", "guardInterval", axGi);
+  cmd.AddValue("simulationTime", "Simulation time in seconds", simulationTime);
+  cmd.AddValue("useExtendedBlockAck", "Enable/disable use of extended BACK", useExtendedBlockAck);
+  cmd.AddValue("dlAckType", "Ack sequence type for DL OFDMA (NO-OFDMA, ACK-SU-FORMAT, MU-BAR, AGGR-MU-BAR)",
+               dlAckSeqType);
+  cmd.AddValue("payloadSize", "The application payload size in bytes", payloadSize);
+  cmd.Parse(argc, argv);
+
+  Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpNewReno::GetTypeId()));   //这个算法被我修改过，屏蔽了满启动和拥塞控制过程，竞争窗口会一直维持在初始值不变，除非发生了拥塞
+  Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(payloadSize));
+  Config::SetDefault("ns3::TcpSocket::InitialCwnd", UintegerValue(250));        //初始竞争窗口
+  Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(5000000));
+  Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(5000000));
+  Config::SetDefault("ns3::TcpSocket::DelAckCount", UintegerValue(8));
+  Config::SetDefault("ns3::TcpSocket::DelAckTimeout", TimeValue(Seconds(10)));
+  Config::SetDefault("ns3::TcpSocketBase::MinRto", TimeValue (Seconds (10.0)));  //TCP最小重传等待时间，我发现这个值小了导致部分STA的吞吐特别低
+
+  /********ac*********/
+
+  NodeContainer wifiApNode;
+  wifiApNode.Create(1);
+  NodeContainer acWifiStaNodes;
+  acWifiStaNodes.Create(acnStations);
+  NodeContainer axWifiStaNodes;
+  axWifiStaNodes.Create(axnStations);
+  WifiMacHelper acMac, axMac;
+  WifiHelper acWifi, axWifi, apWifi;
+  acWifi.SetStandard(WIFI_STANDARD_80211ac);
+  axWifi.SetStandard(WIFI_STANDARD_80211ax);
+  apWifi.SetStandard(WIFI_STANDARD_80211ax);
+
+  /* acWifi.SetRemoteStationManager("ns3::ConstantRateWifiManager", "DataMode", StringValue(oss1.str()),
+                                 "RtsCtsThreshold", StringValue("0")); */
+  acWifi.SetRemoteStationManager("ns3::IdealWifiManager",
+                                 "RtsCtsThreshold", StringValue("7000000"));                               
+
+  /* axWifi.SetRemoteStationManager("ns3::ConstantRateWifiManager", "DataMode", StringValue(oss2.str()),
+                                 "RtsCtsThreshold", StringValue("7000000")); */
+  axWifi.SetRemoteStationManager("ns3::IdealWifiManager",
+                                 "RtsCtsThreshold", StringValue((dlAckSeqType == "NO-OFDMA")?"7000000":"7000000"));
+  apWifi.SetRemoteStationManager("ns3::IdealWifiManager",
+                                 "RtsCtsThreshold", StringValue((dlAckSeqType == "NO-OFDMA")?"7000000":"7000000"));
+
+  acWifi.ConfigHtOptions("ShortGuardIntervalSupported", BooleanValue(acSgi));    //ac的保护间隔
+  axWifi.ConfigHtOptions("ShortGuardIntervalSupported", BooleanValue(acSgi));
+  axWifi.ConfigHeOptions("GuardInterval", TimeValue(NanoSeconds(axGi)), 
+                         "MpduBufferSize", UintegerValue(useExtendedBlockAck ? 256 : 64));    //ax的保护间隔和MPDU Buffer大小
+  apWifi.ConfigHtOptions("ShortGuardIntervalSupported", BooleanValue(acSgi));
+  apWifi.ConfigHeOptions("GuardInterval", TimeValue(NanoSeconds(axGi)), 
+                         "MpduBufferSize", UintegerValue(useExtendedBlockAck ? 256 : 64));    //ax的保护间隔和MPDU Buffer大小
+
+  if (dlAckSeqType != "NO-OFDMA")
+  {
+    axMac.SetMultiUserScheduler("ns3::RrMultiUserScheduler",
+                                "EnableUlOfdma", BooleanValue(true),
+                                "EnableBsrp", BooleanValue(true),
+                                "UseCentral26TonesRus", BooleanValue(false),
+                                "NStations", UintegerValue(64));
+  }
+
+  if (dlAckSeqType == "ACK-SU-FORMAT")                  //下行OFDMA回复ACK的方式，下面两个都是
+  {
+    Config::SetDefault("ns3::WifiDefaultAckManager::DlMuAckSequenceType",
+                       EnumValue(WifiAcknowledgment::DL_MU_BAR_BA_SEQUENCE));
+  }
+  else if (dlAckSeqType == "MU-BAR")
+  {
+    Config::SetDefault("ns3::WifiDefaultAckManager::DlMuAckSequenceType",
+                       EnumValue(WifiAcknowledgment::DL_MU_TF_MU_BAR));
+  }
+  else if (dlAckSeqType == "AGGR-MU-BAR")
+  {
+    Config::SetDefault("ns3::WifiDefaultAckManager::DlMuAckSequenceType",
+                       EnumValue(WifiAcknowledgment::DL_MU_AGGREGATE_TF));
+  }
+  else if (dlAckSeqType != "NO-OFDMA")                  //check语句，没什么用
+  {
+    NS_ABORT_MSG("Invalid DL ack sequence type (must be NO-OFDMA, ACK-SU-FORMAT, MU-BAR or AGGR-MU-BAR)");
+  }
+
+  Ssid ssid = Ssid("scenario2");
+  /*
+   * SingleModelSpectrumChannel cannot be used with 802.11ax because two
+   * spectrum models are required: one with 78.125 kHz bands for HE PPDUs
+   * and one with 312.5 kHz bands for, e.g., non-HT PPDUs (for more details,
+   * see issue #408 (CLOSED))
+   */
+  Ptr<MultiModelSpectrumChannel> spectrumChannel = CreateObject<MultiModelSpectrumChannel>();   //为什么用multi可以看上面那段英文，是ns3给的
+
+  Ptr<LogDistancePropagationLossModel> lossmodel = CreateObject<LogDistancePropagationLossModel>();     //对数距离传播损耗模型
+  spectrumChannel->AddPropagationLossModel(lossmodel);
+
+  SpectrumWifiPhyHelper phy;
+  phy.SetPcapDataLinkType(WifiPhyHelper::DLT_IEEE802_11_RADIO);
+  phy.SetChannel(spectrumChannel);
+  std::string channelStr("{42, 80, BAND_5GHZ, 0}");
+  phy.Set("ChannelSettings", StringValue(channelStr));
+  phy.Set("FixedPhyBand", BooleanValue(true));
+  phy.Set("RxNoiseFigure", DoubleValue(1));     //用来调整低噪的，ns3给的默认低噪和华为给的不一样
+  phy.Set("RxGain", DoubleValue(3));
+  phy.Set("TxGain", DoubleValue(3));
+  phy.DisablePreambleDetectionModel();
+  //phy.Set("CcaEdThreshold", DoubleValue (-72.0));
+
+  phy.Set("Antennas", UintegerValue(4));
+  phy.Set("MaxSupportedTxSpatialStreams", UintegerValue(4));
+  phy.Set("MaxSupportedRxSpatialStreams", UintegerValue(2));
+  phy.Set("TxPowerStart", DoubleValue(23));
+  phy.Set("TxPowerEnd", DoubleValue(23));
+
+  axMac.SetType("ns3::ApWifiMac",
+                "EnableBeaconJitter", BooleanValue(false),
+                "Ssid", SsidValue(ssid),
+                "BE_MaxAmpduSize", UintegerValue(122879));
+  apDevice = apWifi.Install(phy, axMac, wifiApNode);
+
+  phy.Set("Antennas", UintegerValue(2));
+  phy.Set("MaxSupportedTxSpatialStreams", UintegerValue(2));
+  phy.Set("MaxSupportedRxSpatialStreams", UintegerValue(2));
+  phy.Set("TxPowerStart", DoubleValue(20));
+  phy.Set("TxPowerEnd", DoubleValue(20));
+  acMac.SetType("ns3::StaWifiMac",
+                "Ssid", SsidValue(ssid),
+                "BE_MaxAmpduSize", UintegerValue(122880));
+  axMac.SetType("ns3::StaWifiMac",
+                "Ssid", SsidValue(ssid),
+                "BE_MaxAmpduSize", UintegerValue(122880));
+  acStaDevices = acWifi.Install(phy, acMac, acWifiStaNodes);
+  axStaDevices = axWifi.Install(phy, axMac, axWifiStaNodes);
+  
+  Ptr<NetDevice> dev = wifiApNode.Get(0)->GetDevice(0); //这一段是为了设置txop limit和mac队列的最大长度
+  Ptr<WifiNetDevice> wifi_dev = DynamicCast<WifiNetDevice>(dev);
+  PointerValue ptr;
+  Ptr<QosTxop> edca;
+  Ptr<WifiMacQueue> queue;
+/*   Ptr<WifiRemoteStationManager> ApManager = wifi_dev->GetRemoteStationManager();
+  Ptr<WifiNetDevice> sta_dev;
+  for(std::size_t i=0;i<3;i++)
+  {
+    sta_dev = DynamicCast<WifiNetDevice>(acStaDevices.Get(i));
+    ApManager->SetMaxAmpduSize(sta_dev->GetMac()->GetAddress(),2000);
+  } */
+  wifi_dev->GetMac()->GetAttribute("BE_Txop", ptr);
+  edca = ptr.Get<QosTxop>();
+  edca->SetTxopLimit(MicroSeconds(4096));       //txop limit
+  queue = edca->GetWifiMacQueue();
+
+  queue->TraceConnectWithoutContext("Drop", MakeCallback(&traceMacQueueDrop));
+  queue->TraceConnectWithoutContext("Expired", MakeCallback(&traceMacQueueExpired));
+  //queue->TraceConnectWithoutContext("PacketsInQueue", MakeCallback(&traceApMacQueueN));
+
+  for(std::size_t i=0; i<acnStations; i++)      //这里是为了让每个STA能和AP成功关联
+  {
+    Ptr<NetDevice> staDev = acWifiStaNodes.Get(i)->GetDevice(0);
+    Ptr<WifiNetDevice> sta_wifi_dev = DynamicCast<WifiNetDevice>(staDev);
+    sta_wifi_dev->GetMac()->SetAttribute("WaitBeaconTimeout",TimeValue (MilliSeconds (120+(i*10))));  //make sure every sta can associate successfully
+  }
+
+  for(std::size_t i=0; i<axnStations; i++)      //同上
+  {
+    Ptr<NetDevice> staDev = axWifiStaNodes.Get(i)->GetDevice(0);
+    Ptr<WifiNetDevice> sta_wifi_dev = DynamicCast<WifiNetDevice>(staDev);
+    sta_wifi_dev->GetMac()->SetAttribute("WaitBeaconTimeout",TimeValue (MilliSeconds (120+(i*10)+320)));  //make sure every sta can associate successfully
+  }
+
+  /* RngSeedManager::SetSeed(1);
+  RngSeedManager::SetRun(1);
+  int64_t streamNumber = 100;
+  streamNumber += acWifi.AssignStreams(apDevice, streamNumber);
+  streamNumber += acWifi.AssignStreams(acStaDevices, streamNumber); */
+
+  // mobility.
+  MobilityHelper mobility;
+  mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+  mobility.SetPositionAllocator("ns3::RandomDiscPositionAllocator",
+                                "X", StringValue("7.5"),
+                                "Y", StringValue("7.5"),
+                                "Rho", StringValue("ns3::UniformRandomVariable[Min=0|Max=0]"));
+  mobility.Install(wifiApNode);
+
+  mobility.SetPositionAllocator("ns3::RandomDiscPositionAllocator",
+                                "X", StringValue("7.5"),
+                                "Y", StringValue("7.5"),
+                                "Rho", StringValue("ns3::UniformRandomVariable[Min=0.5|Max=7.5]"));
+  mobility.Install(acWifiStaNodes);
+  mobility.Install(axWifiStaNodes);
+  
+
+  /* Internet stack*/
+  InternetStackHelper stack;
+  stack.Install(wifiApNode);
+  stack.Install(acWifiStaNodes);
+  stack.Install(axWifiStaNodes);
+
+  Ipv4AddressHelper address;
+  address.SetBase("192.168.1.0", "255.255.255.0");
+  Ipv4InterfaceContainer apNodeInterface;
+  Ipv4InterfaceContainer acStaNodeInterfaces;
+  Ipv4InterfaceContainer axStaNodeInterfaces;
+
+  apNodeInterface = address.Assign(apDevice);
+  acStaNodeInterfaces = address.Assign(acStaDevices);
+  axStaNodeInterfaces = address.Assign(axStaDevices);
+
+  TrafficControlHelper apTch;
+  apTch.Uninstall(apDevice);
+  TrafficControlHelper staTch;
+  staTch.Uninstall(acStaDevices); 
+  staTch.Uninstall(axStaDevices);
+
+  /* Setting applications */
+  ApplicationContainer serverApp;
+
+  // TCP flow
+  /* uint16_t port1 = 50000;
+  uint16_t port2 = 60000; */
+  uint16_t port1 = 1603;
+  uint16_t port2 = 1604;
+  for (std::size_t i = 0; i < acnStations; i++)
+  {
+    Address localAddress(InetSocketAddress(acStaNodeInterfaces.GetAddress(i), port1));
+    PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", localAddress);
+    serverApp = packetSinkHelper.Install(acWifiStaNodes.Get(i));
+    serverApp.Start(Seconds(0.0));
+    serverApp.Stop(Seconds(simulationTime + 10));
+  }
+
+  for(std::size_t i=0; i<acnStations; i++)
+  {
+    Ptr<Node> appSource = NodeList::GetNode(0);
+    Ptr<idSender> sender = CreateObject<idSender>();
+    InetSocketAddress dest(acStaNodeInterfaces.GetAddress(i),port1);
+    DataRate rate("156250kb/s");
+    dest.SetTos(0x70);      //0x70 AC_BE, 0x28 AC_BK, 0xb8 AC_VI, 0xc0 AC_VO
+    sender->SetRemote(dest);    //设置目标地址
+    sender->SetDataRate(rate);  //数率
+    sender->SetTrafficType(0);             //0 if tcp, 1 if udp
+    sender->SetInterval(Seconds(10));   //发第一个包和整体业务之间的时间间隔
+    appSource->AddApplication(sender);
+    sender->SetStartTime(Seconds(1.0+double(i*0.1)));   //应用启动的时间
+    sender->SetPktSize(payloadSize);    //每个数据包的大小
+  }
+
+  for (std::size_t i = 0; i < axnStations; i++)
+  {
+    Address localAddress(InetSocketAddress(axStaNodeInterfaces.GetAddress(i), port2));
+    PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", localAddress);
+    serverApp = packetSinkHelper.Install(axWifiStaNodes.Get(i));
+    serverApp.Start(Seconds(0.0));
+    serverApp.Stop(Seconds(simulationTime + 10));
+  }
+
+  for(std::size_t i=0; i<axnStations; i++)      //这里面同上
+  {
+    Ptr<Node> appSource = NodeList::GetNode(0);
+    Ptr<idSender> sender = CreateObject<idSender>();
+    InetSocketAddress dest(axStaNodeInterfaces.GetAddress(i),port2);
+    DataRate rate("156250kb/s");
+    dest.SetTos(0x70);
+    sender->SetRemote(dest);
+    sender->SetDataRate(rate);
+    sender->SetTrafficType(0);             //0 if tcp, 1 if udp
+    sender->SetInterval(Seconds(10));       //interval between first packet and the bulk of packets
+    appSource->AddApplication(sender);
+    sender->SetStartTime(Seconds(1.0+double(i*0.1)+3.2));
+    sender->SetPktSize(payloadSize);
+  }
+
+  if (tracing)
+  {
+    phy.EnablePcap("scenario2_base", apDevice.Get(0));
+    // phy.EnablePcapAll("scenario-2-" + std::to_string(frequency) + "-" + std::to_string(channelWidth));
+  }
+
+  
+
+  Simulator::Schedule(Seconds(10.2), &CalculateThroughput);      
+  Simulator::Schedule(Seconds(10.2),&setTrace);                   //10s后开始统计总吞吐和每个STA的吞吐
+  //Simulator::Schedule(Seconds(10),&setMinCwandMaxCw);
+  Simulator::Schedule(Seconds(10),&setEdcaTimer);               //10s后Mu Edca Parameters才开始生效，不然会影响10s前ARP协议的完成
+  Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyRxDrop", MakeCallback(&tracePhyDrop));
+
+  //Simulator::Schedule (Seconds (1.00000001), &traceSocket);     //socket的trace要程序运行之后才能绑定，不然会报错
+
+  Simulator::Schedule(Seconds(0), &Ipv4GlobalRoutingHelper::PopulateRoutingTables);
+  Simulator::Stop(Seconds(simulationTime + 10));
+  Simulator::Run();
+  Simulator::Destroy();
+
+  for(int i = 0; i < 64; i++)
+  {
+    NS_LOG_UNCOND("STA"<<i+1<<":\t"<<SingleStaRx[i] * (double)8 / (simulationTime * 1e6));
+  }
+  std::cout << "over" << std::endl;
+
+  return 0;
+}
