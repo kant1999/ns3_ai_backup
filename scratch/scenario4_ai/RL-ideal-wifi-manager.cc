@@ -409,7 +409,7 @@ void RLIdealWifiManager::action_cw_ap(int act, int type_id)
     
     if (act == 0)
     {
-        CWsize[type_id] = floor(CWsize[type_id] / 2);
+        CWsize[type_id] = (CWsize[type_id] + 1) / 2 - 1;
     }
     else if (act == 1)
     {
@@ -417,7 +417,7 @@ void RLIdealWifiManager::action_cw_ap(int act, int type_id)
     }
     else if (act == 2)
     {
-        CWsize[type_id] = floor(CWsize[type_id] * 2) ;
+        CWsize[type_id] = (CWsize[type_id] + 1) * 2 - 1 ;
     }
     else
     {
@@ -594,7 +594,7 @@ RLIdealWifiManager::APdowntrain(double cur)
 {   
     Time now = Simulator::Now();      
     auto env =  m_ns3ai_mod->EnvSetterCond();     ///< Acquire the Env memory for writing
-    double snr = 0;
+    double net_snr = 0;
     double error = 0;
     double number = 0;
     int i = 0;
@@ -606,13 +606,13 @@ RLIdealWifiManager::APdowntrain(double cur)
             {
                 if(sta_type[j]==i)
             {
-                snr = snr + average_snr[j];
+                net_snr = net_snr + snr[j-1];
                 error = error + net_error_radio[j-1];
                 number++;
             }
                 j++;
             }
-                env->snr[i] = snr*1.0/number;
+                env->snr[i] = net_snr*1.0/number;
                 env->per[i] = error*1.0/number;
                 env->t_idle[i] = t_idle;
                 env->cw_last[i] = CWsize[i];
@@ -622,7 +622,7 @@ RLIdealWifiManager::APdowntrain(double cur)
                 // std::cerr << " t_idle[i]: " << env->t_idle[i] << std::endl;
                 // std::cerr << " env->cw_last[i]: " << env->cw_last[i] << std::endl;
                 // std::cerr << " env->length_last[i]: " << env->length_last[i] << std::endl;
-                snr = 0;
+                net_snr = 0;
                 error = 0;
                 number = 0;
                 
@@ -692,7 +692,7 @@ void
 RLIdealWifiManager::APuptrain(double cur)
 {   
     auto env =  m_ns3ai_mod->EnvSetterCond();     ///< Acquire the Env memory for writing
-    double snr = 0;
+    double net_snr = 0;
     double error = 0;
     double number = 0;
     int i = 0;
@@ -704,14 +704,14 @@ RLIdealWifiManager::APuptrain(double cur)
             {
                 if(sta_type[j]==i)
             {
-                snr = snr + average_snr[j];
+                net_snr = net_snr + snr[j-1];
                 error = error + net_error_radio[j-1];
                 number++;
             }
                 j++;
             }   
                 // std::cerr << " type: " << i << " number: " << number << std::endl; 
-                env->snr[i] = snr*1.0/number;
+                env->snr[i] = net_snr*1.0/number;
                 env->per[i] = error*1.0/number;
                 env->t_idle[i] = t_idle;
                 //env->cw_last[i] = STACWsize[i];
@@ -722,7 +722,7 @@ RLIdealWifiManager::APuptrain(double cur)
                 // std::cerr << " t_idle[i]: " << env->t_idle[i] << std::endl;
                 std::cerr << " env->cw_last[i]: " << env->cw_last[i] << std::endl;
                 std::cerr << " env->length_last[i]: " << env->length_last[i] << std::endl;
-                snr = 0;
+                net_snr = 0;
                 error = 0;
                 number = 0;
                 
@@ -946,16 +946,12 @@ RLIdealWifiManager::Reset(WifiRemoteStation* station) const
 void
 RLIdealWifiManager::DoReportRxOk(WifiRemoteStation* station, double rxSnr, WifiMode txMode)
 {   
-    total_recievepacketsnumber[id] = total_recievepacketsnumber[id] + 1;
-    total_snr[id] = total_snr[id] + rxSnr;
-    
     if(this->id == 0)
     {
         uint8_t buffer[6];
         station->m_state->m_address.CopyTo(buffer);
         int nSta = int(buffer[5]); 
-        sta_snr[nSta-1] = sta_snr[nSta-1] + rxSnr;
-        sta_recievepacketsnumber[nSta-1] = sta_recievepacketsnumber[nSta-1] + 1;
+        snr[nSta-2] = rxSnr;
     }
 
     NS_LOG_FUNCTION(this << station << rxSnr << txMode);
