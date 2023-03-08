@@ -161,6 +161,7 @@ extern double t_idle;
 extern bool sta_begin_action;
 extern int Ampdusize[65]; 
 extern double snr[64];
+extern Mac48Address apAddr;
 
 ///////////////////////////////////
 ////时间变量、计算空闲时间占空比的部分///
@@ -736,12 +737,13 @@ void setInitialFramelengthandCW()
   int i = 0;
   Ptr<WifiRemoteStationManager> rlmanager;
   Ptr<WifiNetDevice> ap_dev = DynamicCast<WifiNetDevice>(apDevice.Get(0));
+  apAddr = ap_dev->GetMac()->GetAddress();
   while (i < 32)
   {
     rlmanager = DynamicCast<WifiNetDevice>(acStaDevices.Get(i))->GetRemoteStationManager();
-    rlmanager->SetMaxAmpduSize(ap_dev->GetMac()->GetAddress(),initFrameLen_ac);
+    rlmanager->SetMaxAmpduSize(apAddr,initFrameLen_ac);
     rlmanager = DynamicCast<WifiNetDevice>(axStaDevices.Get(i))->GetRemoteStationManager();
-    rlmanager->SetMaxAmpduSize(ap_dev->GetMac()->GetAddress(),initFrameLen_ax);
+    rlmanager->SetMaxAmpduSize(apAddr,initFrameLen_ax);
     i++;
   }
   Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MinCw",UintegerValue(initCW_BE));
