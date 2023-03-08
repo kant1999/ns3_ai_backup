@@ -811,13 +811,13 @@ int main(int argc, char *argv[])
   /*acWifi.SetRemoteStationManager("ns3::ConstantRateWifiManager", "DataMode", StringValue(oss1.str()),
                                  "RtsCtsThreshold", StringValue("0")); */
   acWifi.SetRemoteStationManager("ns3::RLIdealWifiManager",
-                                 "RtsCtsThreshold", StringValue("0"));
+                                 "RtsCtsThreshold", StringValue("7000000"));
 
   oss2 << "HeMcs" << axMcs;
   axWifi.SetRemoteStationManager("ns3::RLIdealWifiManager",
-                                 "RtsCtsThreshold", StringValue((dlAckSeqType == "NO-OFDMA")?"0":"7000000"));
+                                 "RtsCtsThreshold", StringValue((dlAckSeqType == "NO-OFDMA")?"7000000":"7000000"));
   apWifi.SetRemoteStationManager("ns3::RLIdealWifiManager",
-                                 "RtsCtsThreshold", StringValue((dlAckSeqType == "NO-OFDMA")?"0":"7000000"));
+                                 "RtsCtsThreshold", StringValue((dlAckSeqType == "NO-OFDMA")?"7000000":"7000000"));
 
   acWifi.ConfigHtOptions("ShortGuardIntervalSupported", BooleanValue(acSgi));    //ac的保护间隔
   axWifi.ConfigHtOptions("ShortGuardIntervalSupported", BooleanValue(acSgi));
@@ -921,7 +921,7 @@ int main(int argc, char *argv[])
   wifi_dev->GetMac()->TraceConnectWithoutContext("MacTxDrop",MakeCallback(&traceMacTxDrop));
   wifi_dev->GetMac()->TraceConnectWithoutContext("MacRxDrop",MakeCallback(&traceMacRxDrop));
   
-  wifi_dev->GetMac()->GetAttribute("VI_Txop", ptr);
+  wifi_dev->GetMac()->GetAttribute("BE_Txop", ptr);
   edca = ptr.Get<QosTxop>();
   edca->SetTxopLimit(MicroSeconds(4096)); //设置Txop limit
   //edca->TraceConnectWithoutContext("CwTrace", MakeCallback(&CwValueTracedCallback));
@@ -936,7 +936,7 @@ int main(int argc, char *argv[])
     Ptr<WifiNetDevice> sta_wifi_dev = DynamicCast<WifiNetDevice>(staDev);
     sta_wifi_dev->GetMac()->SetAttribute("WaitBeaconTimeout",TimeValue (MilliSeconds (120+(i*10))));  //make sure every sta can associate successfully
     ////////////STA 追踪 CW值////////////////
-    sta_wifi_dev->GetMac()->GetAttribute("VI_Txop", ptr);
+    sta_wifi_dev->GetMac()->GetAttribute("BE_Txop", ptr);
     edca = ptr.Get<QosTxop>();
     //edca->TraceConnectWithoutContext("CwTrace", MakeCallback(&CwValueTracedCallback));
   }
@@ -948,7 +948,7 @@ int main(int argc, char *argv[])
     sta_wifi_dev->GetMac()->SetAttribute("WaitBeaconTimeout",TimeValue (MilliSeconds (120+(i*10)+320)));  //make sure every sta can associate successfully
   
     ////////////STA 追踪 CW值////////////////
-    sta_wifi_dev->GetMac()->GetAttribute("VI_Txop", ptr);
+    sta_wifi_dev->GetMac()->GetAttribute("BE_Txop", ptr);
     edca = ptr.Get<QosTxop>();
     //edca->TraceConnectWithoutContext("CwTrace", MakeCallback(&CwValueTracedCallback));
   }
@@ -1017,7 +1017,7 @@ int main(int argc, char *argv[])
     Ptr<idSender> sender = CreateObject<idSender>();
     InetSocketAddress dest(apNodeInterface.GetAddress(0),port1);
     DataRate rate("156250kb/s");
-    dest.SetTos(0xb8);  //0x70 AC_BE, 0x28 AC_BK, 0xb8 AC_VI, 0xc0 AC_VO
+    dest.SetTos(0x70);  //0x70 AC_BE, 0x28 AC_BK, 0xb8 AC_VI, 0xc0 AC_VO
     sender->SetRemote(dest);    //设置目标地址
     sender->SetDataRate(rate);  //数率
     sender->SetTrafficType(0);             //0 if tcp, 1 if udp
@@ -1039,7 +1039,7 @@ int main(int argc, char *argv[])
     Ptr<idSender> sender = CreateObject<idSender>();
     InetSocketAddress dest(apNodeInterface.GetAddress(0),port2);
     DataRate rate("156250kb/s");
-    dest.SetTos(0xb8);   //0x70 AC_BE, 0x28 AC_BK, 0xb8 AC_VI, 0xc0 AC_VO
+    dest.SetTos(0x70);   //0x70 AC_BE, 0x28 AC_BK, 0xb8 AC_VI, 0xc0 AC_VO
     sender->SetRemote(dest);
     sender->SetDataRate(rate);
     sender->SetTrafficType(0);             //0 if tcp, 1 if udp
@@ -1054,9 +1054,9 @@ int main(int argc, char *argv[])
     phy.EnablePcap("scenario4-cw", apDevice.Get(0));
   }
 
-  Simulator::Schedule(Seconds(10.0+timestep*0.001), &CalculateThroughput);  
-  Simulator::Schedule(Seconds(10.0+timestep_large*0.001), &CalculateThroughput_large_period);    
-  Simulator::Schedule(Seconds(10),&setTrace);  
+  Simulator::Schedule(Seconds(10.2+timestep*0.001), &CalculateThroughput);  
+  Simulator::Schedule(Seconds(10.2+timestep_large*0.001), &CalculateThroughput_large_period);    
+  Simulator::Schedule(Seconds(10.2),&setTrace);  
   Simulator::Schedule(Seconds(10),&setEdcaTimer);               //10s后Mu Edca Parameters才开始生效，不然会影响10s前ARP协议的完成
   
   Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyRxDrop", MakeCallback(&tracePhyDrop));
@@ -1065,7 +1065,7 @@ int main(int argc, char *argv[])
 
   Simulator::Schedule(Seconds(0), &Ipv4GlobalRoutingHelper::PopulateRoutingTables);
 
-  Simulator::Stop(Seconds(simulationTime + 10));
+  Simulator::Stop(Seconds(simulationTime + 10.2));
   Simulator::Run();
   // for(int i=0;i<64;i++)
   // {
