@@ -76,6 +76,9 @@ double SingleStaLastRx[64];
 double SingleStaLastRx_large_period[64];
 extern double SingleStacur[64];
 double total_SingleStacur[64];
+int initFrameLen_ac = 4*1536;
+int initFrameLen_ax = 10*1536;
+int initCW_BE = 15;
 
 /// 计算时延的部分 ////
 Time LastMacDelay_large_period;
@@ -728,6 +731,23 @@ void setEdcaTimer()
   Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/HeConfiguration/VoMuEdcaTimer", TimeValue(MicroSeconds(2088960)));
 }
 
+void setInitialFramelengthandCW()
+{
+  int i = 0;
+  Ptr<WifiRemoteStationManager> rlmanager;
+  Ptr<WifiNetDevice> ap_dev = DynamicCast<WifiNetDevice>(apDevice.Get(0));
+  while (i < 32)
+  {
+    rlmanager = DynamicCast<WifiNetDevice>(acStaDevices.Get(i))->GetRemoteStationManager();
+    rlmanager->SetMaxAmpduSize(ap_dev->GetMac()->GetAddress(),initFrameLen_ac);
+    rlmanager = DynamicCast<WifiNetDevice>(axStaDevices.Get(i))->GetRemoteStationManager();
+    rlmanager->SetMaxAmpduSize(ap_dev->GetMac()->GetAddress(),initFrameLen_ax);
+    i++;
+  }
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MinCw",UintegerValue(initCW_BE));
+  Config::Set("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/BE_Txop/MaxCw",UintegerValue(initCW_BE));
+}
+
 int main(int argc, char *argv[])
 {
 
@@ -1058,6 +1078,7 @@ int main(int argc, char *argv[])
   Simulator::Schedule(Seconds(10.2+timestep_large*0.001), &CalculateThroughput_large_period);    
   Simulator::Schedule(Seconds(10.2),&setTrace);  
   Simulator::Schedule(Seconds(10),&setEdcaTimer);               //10s后Mu Edca Parameters才开始生效，不然会影响10s前ARP协议的完成
+  Simulator::Schedule(Seconds(10),&setInitialFramelengthandCW);
   
   Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyRxDrop", MakeCallback(&tracePhyDrop));
   //Config::Connect("/NodeList/0/DeviceList/*/$ns3::WifiNetDevice/Mac/VI_Txop", MakeCallback(&traceVICw));
