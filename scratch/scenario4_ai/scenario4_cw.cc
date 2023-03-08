@@ -161,7 +161,7 @@ extern double t_idle;
 extern bool sta_begin_action;
 extern int Ampdusize[65]; 
 extern double snr[64];
-extern Mac48Address apAddr;
+extern uint8_t apMacAddr[6];
 
 ///////////////////////////////////
 ////时间变量、计算空闲时间占空比的部分///
@@ -737,7 +737,8 @@ void setInitialFramelengthandCW()
   int i = 0;
   Ptr<WifiRemoteStationManager> rlmanager;
   Ptr<WifiNetDevice> ap_dev = DynamicCast<WifiNetDevice>(apDevice.Get(0));
-  apAddr = ap_dev->GetMac()->GetAddress();
+  Mac48Address apAddr = ap_dev->GetMac()->GetAddress();
+  apAddr.CopyTo(apMacAddr);
   while (i < 32)
   {
     rlmanager = DynamicCast<WifiNetDevice>(acStaDevices.Get(i))->GetRemoteStationManager();
