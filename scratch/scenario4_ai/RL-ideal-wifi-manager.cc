@@ -396,11 +396,13 @@ void RLIdealWifiManager::action_length_sta()
         sta_Ampdusize = std::min(max_acAmpdusiz, std::max(sta_Ampdusize, min_acAmpdusiz));
     }
     STAMpdulength[sta_type[this->id]] = sta_Ampdusize;
-    this->GetMac()->SetAttribute("VI_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
-    this->GetMac()->SetAttribute("VO_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
-    this->GetMac()->SetAttribute("BE_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
-    this->GetMac()->SetAttribute("BK_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU 
-    //this->SetMaxAmpduSize(this->GetMac()->GetAddress(),sta_Ampdusize);
+    //this->GetMac()->SetAttribute("VI_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
+    //this->GetMac()->SetAttribute("VO_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
+    //this->GetMac()->SetAttribute("BE_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
+    //this->GetMac()->SetAttribute("BK_MaxAmpduSize", UintegerValue(sta_Ampdusize * 1536)); // 122879 at most 80 MPDUs for an A-MPDU
+    Mac48Address apAddr;
+    apAddr.CopyFrom(apMacAddr);
+    this->SetMaxAmpduSize(apAddr,sta_Ampdusize);
     //std::cerr << Simulator::Now().GetMilliSeconds() << " BE_MaxAmpduSize为" << sta_Ampdusize <<  std::endl;
 }
 
