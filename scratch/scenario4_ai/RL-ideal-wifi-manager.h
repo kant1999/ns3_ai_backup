@@ -49,6 +49,7 @@ extern double sta_error_radio[64]{};//定义于h文件中 STA的总丢包率
 extern double ap_error_radio[64]{}; //定义于h文件中
 extern double net_error_radio[64]{};//统计了sta和ap都作为发送端的误码率参数
 extern int Ampdusize[65]{};  // 80 聚合帧 由AP维护的发往不同STA的聚合帧长度设置
+extern double snr[64]{};
 
 
 //extern int nApMacQueue;
